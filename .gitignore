@@ -1,0 +1,7 @@
+*
+!*.vhd
+!.gitignore
+!*.qpf
+!*.qsf
+!*.qws
+!*.vwf
