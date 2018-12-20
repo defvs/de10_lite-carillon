@@ -20,7 +20,10 @@ entity Generateur1A is
   port (
     MAX10_CLK1_50 : in std_logic; -- Horloge 50Mhz de la carte
     GPIO : buffer std_logic_vector(1 downto 0); -- Sorties GPIO
-    -- SW : in unsigned(9 downto 0); -- Switch division
+    -- KEY : in std_logic_vector(1 downto 0);
+    SW : in unsigned(5 downto 0);
+    HEX0 : out std_logic_vector(0 downto 0);
+    LEDR : out unsigned(4 downto 0);
     VGA_R : out unsigned(3 downto 0); -- DAC sortie rouge du connecteur D-SUB
     VGA_B : out unsigned(3 downto 0) -- DAC sortie bleue du connecteur D-SUB
   );
@@ -32,73 +35,32 @@ architecture arch of Generateur1A is
     signal sine_value : unsigned(3 downto 0); -- Valeur actuelle du sinus
     signal pwm_counter : unsigned(3 downto 0); -- Compteur de rampe pour la modulation d'impulsion
 
+    alias noteSW is SW(5 downto 2);
+    alias setupMode is SW(1);
+    alias setupNext is SW(0);
 
-    signal playedNote : unsigned(3 downto 0);
+    signal break : std_logic;
+    signal breakCounter : std_logic;
+
+    -- signal playedNote : unsigned(3 downto 0);
     signal speedCounter : unsigned(24 downto 0);
     signal playClock : std_logic;
     signal currentfreq : unsigned(24 downto 0);
     signal pause : std_logic;
     signal currentNote : unsigned(4 downto 0) := "00000";
 
-    type NOTE_SHEET_TYPE is array(0 to 31) of std_logic_vector(3 downto 0);
-    constant NOTE_SHEET : NOTE_SHEET_TYPE :=
-        (
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   1   ,4)),
-            std_logic_vector(to_unsigned(   2   ,4)),
-            std_logic_vector(to_unsigned(   3   ,4)),
-            std_logic_vector(to_unsigned(   4   ,4)),
-            std_logic_vector(to_unsigned(   5   ,4)),
-            std_logic_vector(to_unsigned(   6   ,4)),
-            std_logic_vector(to_unsigned(   7   ,4)),
-            std_logic_vector(to_unsigned(   8   ,4)),
-            std_logic_vector(to_unsigned(   9   ,4)),
-            std_logic_vector(to_unsigned(   10  ,4)),
-            std_logic_vector(to_unsigned(   9   ,4)),
-            std_logic_vector(to_unsigned(   8   ,4)),
-            std_logic_vector(to_unsigned(   7   ,4)),
-            std_logic_vector(to_unsigned(   6   ,4)),
-            std_logic_vector(to_unsigned(   5   ,4)),
-            std_logic_vector(to_unsigned(   4   ,4)),
-            std_logic_vector(to_unsigned(   3   ,4)),
-            std_logic_vector(to_unsigned(   2   ,4)),
-            std_logic_vector(to_unsigned(   1   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4)),
-            std_logic_vector(to_unsigned(   0   ,4))
-            ); -- Modifier le carillon ici
-begin
+    type NOTE_SHEET_TYPE is array(0 to 31) of unsigned(3 downto 0);
+    signal NOTE_SHEET : NOTE_SHEET_TYPE;
 
-    frequencySet : process( playedNote )
-    begin
-        case( to_integer(playedNote) ) is
-            when 1 => currentfreq <= to_unsigned(190840,currentfreq'length); pause <= '0';
-            when 2 => currentfreq <= to_unsigned(170068,currentfreq'length); pause <= '0';
-            when 3 => currentfreq <= to_unsigned(151515,currentfreq'length); pause <= '0';
-            when 4 => currentfreq <= to_unsigned(142857,currentfreq'length); pause <= '0';
-            when 5 => currentfreq <= to_unsigned(127551,currentfreq'length); pause <= '0';
-            when 6 => currentfreq <= to_unsigned(113636,currentfreq'length); pause <= '0';
-            when 7 => currentfreq <= to_unsigned(101215,currentfreq'length); pause <= '0';
-            when 8 => currentfreq <= to_unsigned(95420,currentfreq'length); pause <= '0';
-            when 9 => currentfreq <= to_unsigned(85034,currentfreq'length); pause <= '0';
-            when 10 => currentfreq <= to_unsigned(75758,currentfreq'length); pause <= '0';
-            when others => pause <= '1';
-        end case ;
-    end process ; -- frequencySet
+    -- Carillon personalisé
+    signal setupNoteCounter : unsigned(4 downto 0) := "00000";
+    -- signal setupMode : std_logic := '0';
+begin
 
     clk_div : process( MAX10_CLK1_50 ) -- Diviseur d'horloge
     begin
-        if rising_edge(MAX10_CLK1_50) and (pause = '0') then
-            if counter = (currentfreq/16) then
+        if rising_edge(MAX10_CLK1_50) and (pause = '0') and (break = '0') then
+            if counter = (currentfreq) then
                 counter <= to_unsigned(0, counter'length); -- Reset du compteur, on a atteint la division
                 GPIO(0) <= not GPIO(0); -- On inverse l'état de notre nouvelle horloge
             else
@@ -113,17 +75,39 @@ begin
             if speedCounter = 12500000 then
                 speedCounter <= to_unsigned(0,counter'length);
                 playClock <= not playClock;
+                break <= '0';
+                breakCounter <= not breakCounter;
             else
                 speedCounter <= speedCounter + 1;
+            end if ;
+
+            if speedCounter = 10000000 and breakCounter = '1' then
+                break <= '1';
             end if ;
         end if ;
     end process ; -- carillon_clkdiv
 
     carillon_read : process( playClock )
     begin
-        if rising_edge(playClock) then
-            playedNote <= unsigned(NOTE_SHEET(to_integer(currentNote)));
-            currentNote <= currentNote + 1;
+        if (rising_edge(playClock) and setupMode = '0') then
+            case( to_integer(NOTE_SHEET(to_integer(currentNote))) ) is
+                when 1 => currentfreq <= to_unsigned(11928,currentfreq'length); pause <= '0';
+                when 2 => currentfreq <= to_unsigned(10629,currentfreq'length); pause <= '0';
+                when 3 => currentfreq <= to_unsigned(9470,currentfreq'length); pause <= '0';
+                when 4 => currentfreq <= to_unsigned(8929,currentfreq'length); pause <= '0';
+                when 5 => currentfreq <= to_unsigned(7972,currentfreq'length); pause <= '0';
+                when 6 => currentfreq <= to_unsigned(7102,currentfreq'length); pause <= '0';
+                when 7 => currentfreq <= to_unsigned(6326,currentfreq'length); pause <= '0';
+                when 8 => currentfreq <= to_unsigned(5964,currentfreq'length); pause <= '0';
+                when 9 => currentfreq <= to_unsigned(5315,currentfreq'length); pause <= '0';
+                when 10 => currentfreq <= to_unsigned(4735,currentfreq'length); pause <= '0';
+                when others => pause <= '1';
+            end case ;
+            if NOTE_SHEET(to_integer(currentNote)) = "1111" then
+                currentNote <= "00000";
+            else
+                currentNote <= currentNote + 1;
+            end if ;
         end if ;
     end process ; -- carillon_read
 
@@ -181,5 +165,28 @@ begin
             end if ;
         end if ;
     end process ; -- pwm_generator
+
+
+
+    -- Setup du carillon (choix des notes par l'utilisateur)
+
+    note_save_trigger : process( setupNext )
+    begin
+        if rising_edge(setupNext) and setupMode = '1' then
+            NOTE_SHEET(to_integer(setupNoteCounter)) <= noteSW;
+
+            setupNoteCounter <= setupNoteCounter + 1;
+        end if ;
+    end process;
+
+    HEX0(0) <= setupMode;
+    LEDR <= setupNoteCounter;
+
+    -- edit_mode_display : process( setupNoteCounter )
+    -- begin
+    --     case( to_integer(setupNoteCounter) ) is
+    --         when 
+    --     end case ;
+    -- end process ; -- edit_mode_display
 
 end architecture ; -- arch
