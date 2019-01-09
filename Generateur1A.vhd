@@ -3,14 +3,22 @@
 -- Nom : Generateur1A.vhd
 -- Carte : DE10-LITE (MAX10 Family - 50K LE)
 -- Description :
---     Cette description logique a pour but de générer différents signaux numériques et analogiques, puis de les
---     sortir sur la fiche VGA.
---     Trois signaux seront générés à partir de l'horloge interne de 50MHz de la carte (que l'on pourra diviser par un facteur)
---         - Dent de scie
---         - Sinusoidale
---         - PWM (Modulation en largeur d'impulsions ou MLI en français)
--- 
--- L'horloge d'entrée de 50Mhz pourra être divisée par un facteur déterminé par les switch (facteur sur 10 bits, 0 à 1023)
+--      Ce programme permet d'encoder un carillon dans la mémoire de la carte, puis de le rejouer
+--      Il ressort le carillon sous forme d'une dent-de-scie, d'un sinus (sur 4 bits) ou d'un signal
+--      modulé en largeur (PWM), qui peut être lu grace à un filtre passe bas.
+-- Controles :
+-- Le switch le plus à gauche permet de passer en mode "setup" où l'on peut régler le carillon.
+--      En mode setup, l'afficheur 7 segment s'allume.
+-- Le second switch permet d'enregistrer la note et de passer à la suivante au front montant.
+--      On peut suivre la note actuellement modifiée grace aux LEDs qui affichent en binaire le compte.
+-- Les 8 derniers switchs sont un "piano", de DO à DO. La note la plus à gauche prends le dessus si plusieurs
+--      sont enfoncées.
+-- Le fait d'en enfoncer aucune permet de faire une note vierge, une pause dans le carillon.
+-- Le fait de toutes les enfoncer permet de marquer la fin du carillon. Le programme reviendra a la première
+--      note si il rencontre ce signal.
+--
+-- Le carillon est composé de maximum 32 notes. Il se joueras automatiquement lorsque l'on est hors du "setup"
+-- La sortie PWM est sur GPIO(0), le sinus sur la sortie bleue du VGA, et la dent de scie sur la sortie rouge.
 
 library ieee ;
 	use ieee.std_logic_1164.all;
@@ -20,10 +28,9 @@ entity Generateur1A is
   port (
     MAX10_CLK1_50 : in std_logic; -- Horloge 50Mhz de la carte
     GPIO : buffer std_logic_vector(1 downto 0); -- Sorties GPIO
-    -- KEY : in std_logic_vector(1 downto 0);
-    SW : in unsigned(5 downto 0);
-    HEX0 : out std_logic_vector(0 downto 0);
-    LEDR : out unsigned(4 downto 0);
+    SW : in unsigned(9 downto 0); -- Switchs pour le setup et le piano
+    HEX0 : out std_logic_vector(0 downto 0); -- Affichage pour montrer le mode setup
+    LEDR : out unsigned(4 downto 0); -- LEDs pour afficher quelle note est modifiée
     VGA_R : out unsigned(3 downto 0); -- DAC sortie rouge du connecteur D-SUB
     VGA_B : out unsigned(3 downto 0) -- DAC sortie bleue du connecteur D-SUB
   );
@@ -35,29 +42,27 @@ architecture arch of Generateur1A is
     signal sine_value : unsigned(3 downto 0); -- Valeur actuelle du sinus
     signal pwm_counter : unsigned(3 downto 0); -- Compteur de rampe pour la modulation d'impulsion
 
-    alias noteSW is SW(5 downto 2);
-    alias setupMode is SW(1);
-    alias setupNext is SW(0);
+    -- Alias pour les switchs.
+    alias noteSW is SW(7 downto 0);
+    alias setupMode is SW(9);
+    alias setupNext is SW(8);
 
-    signal break : std_logic;
-    signal breakCounter : std_logic;
+    signal break : std_logic; -- 1 = Pause
+    signal breakCounter : integer range 0 to 19; -- Permet de compter une courte pause a la fin de chaque note
 
-    -- signal playedNote : unsigned(3 downto 0);
-    signal speedCounter : unsigned(24 downto 0);
-    signal playClock : std_logic;
-    signal currentfreq : unsigned(24 downto 0);
-    signal pause : std_logic;
-    signal currentNote : unsigned(4 downto 0) := "00000";
+    signal speedCounter : unsigned(24 downto 0); -- Permet de timer chaque fois que l'on change de note
+    signal playClock : std_logic; -- Horloge divisée qui dit quand passer à la note suivante
+    signal currentfreq : unsigned(24 downto 0); -- Fréquence de la note jouée
+    signal pause : std_logic; -- 1 = Pause
+    signal currentNote : unsigned(4 downto 0) := "00000"; -- Numéro de la note lue sur la feuille du carillon
 
     type NOTE_SHEET_TYPE is array(0 to 31) of unsigned(3 downto 0);
-    signal NOTE_SHEET : NOTE_SHEET_TYPE;
+    signal NOTE_SHEET : NOTE_SHEET_TYPE; -- FEUILLE DE NOTES DU CARILLON. 32 NOTES MAX.
 
-    -- Carillon personalisé
-    signal setupNoteCounter : unsigned(4 downto 0) := "00000";
-    -- signal setupMode : std_logic := '0';
+    signal setupNoteCounter : unsigned(4 downto 0) := "00000"; -- Numéro de la note actuellement modifiée
 begin
 
-    clk_div : process( MAX10_CLK1_50 ) -- Diviseur d'horloge
+    clk_div : process( MAX10_CLK1_50 ) -- Diviseur d'horloge pour la vraie fréquence de la note
     begin
         if rising_edge(MAX10_CLK1_50) and (pause = '0') and (break = '0') then
             if counter = (currentfreq) then
@@ -69,25 +74,25 @@ begin
         end if ;
     end process ; -- clk_div
 
-    carillon_clkdiv : process( MAX10_CLK1_50 )
+    carillon_clkdiv : process( MAX10_CLK1_50 ) -- Diviseur pour la cadence des notes
     begin
         if rising_edge( MAX10_CLK1_50 ) then
-            if speedCounter = 12500000 then
+            if speedCounter = 625000 then
                 speedCounter <= to_unsigned(0,counter'length);
-                playClock <= not playClock;
-                break <= '0';
-                breakCounter <= not breakCounter;
+                breakCounter <= breakCounter + 1;
+                if breakCounter = 19 then
+                    break <= '1';
+                elsif (breakCounter = 0) or (breakCounter = 10) then
+                    playClock <= not playClock;
+                    break <= '0';
+                end if ;
             else
                 speedCounter <= speedCounter + 1;
-            end if ;
-
-            if speedCounter = 10000000 and breakCounter = '1' then
-                break <= '1';
             end if ;
         end if ;
     end process ; -- carillon_clkdiv
 
-    carillon_read : process( playClock )
+    carillon_read : process( playClock ) -- Lecture et convertion du carillon en diviseur de fréq.
     begin
         if (rising_edge(playClock) and setupMode = '0') then
             case( to_integer(NOTE_SHEET(to_integer(currentNote))) ) is
@@ -103,7 +108,7 @@ begin
                 when 10 => currentfreq <= to_unsigned(4735,currentfreq'length); pause <= '0';
                 when others => pause <= '1';
             end case ;
-            if NOTE_SHEET(to_integer(currentNote)) = "1111" then
+            if NOTE_SHEET(to_integer(currentNote)) = "1111" then -- Remet au début de la feuille si on trouve le signal de fin
                 currentNote <= "00000";
             else
                 currentNote <= currentNote + 1;
@@ -171,22 +176,28 @@ begin
     -- Setup du carillon (choix des notes par l'utilisateur)
 
     note_save_trigger : process( setupNext )
+        variable ret : unsigned(3 downto 0);
     begin
-        if rising_edge(setupNext) and setupMode = '1' then
-            NOTE_SHEET(to_integer(setupNoteCounter)) <= noteSW;
+        if rising_edge(setupNext) and setupMode = '1' then -- Conversion Piano --> Note en binaire
+            case( to_integer(noteSW) ) is
+                when 255 => ret := "1111";
+                when 254 downto 128 => ret := "0001";
+                when 127 downto 64 => ret := "0010";
+                when 63 downto 32 => ret := "0011";
+                when 31 downto 16 => ret := "0100";
+                when 15 downto 8 => ret := "0101";
+                when 7 downto 4 => ret := "0110";
+                when 3 downto 2 => ret := "0111";
+                when 1 => ret := "1000";
+                when others => ret := "0000";
+            end case ;
+            NOTE_SHEET(to_integer(setupNoteCounter)) <= ret;
 
             setupNoteCounter <= setupNoteCounter + 1;
         end if ;
     end process;
 
-    HEX0(0) <= setupMode;
-    LEDR <= setupNoteCounter;
-
-    -- edit_mode_display : process( setupNoteCounter )
-    -- begin
-    --     case( to_integer(setupNoteCounter) ) is
-    --         when 
-    --     end case ;
-    -- end process ; -- edit_mode_display
+    HEX0(0) <= not setupMode; -- Affiche l'état du setup sur le 7seg
+    LEDR <= setupNoteCounter; -- Affiche quelle note est modifiée sur les LEDs.
 
 end architecture ; -- arch
